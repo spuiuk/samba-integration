@@ -10,8 +10,13 @@ set -e
 # TODO: disable debugging
 set -x
 
+# For testing purposes, set environment varliables 
+# GIT_REPO_URL and GIT_REPO_BRANCH to test against
 GIT_REPO_NAME="samba-integration"
-GIT_REPO_URL="https://github.com/gluster/${GIT_REPO_NAME}.git"
+if [ ! -n "${GIT_REPO_URL}" ]
+then
+	GIT_REPO_URL="https://github.com/gluster/${GIT_REPO_NAME}.git"
+fi
 TEST_TARGET="test"
 SCRIPT_GIT_BRANCH="centos-ci"
 SCRIPT_NAME="$(basename $0)"
@@ -74,6 +79,9 @@ then
 			exec "./${SCRIPT_NAME}"
 		fi
 	fi
+elif [ -n "${GIT_REPO_BRANCH}" ]
+then
+	git checkout $GIT_REPO_BRANCH
 fi
 
 # Prefetch the centos/7 vagrant box.
