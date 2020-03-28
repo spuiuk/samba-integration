@@ -5,3 +5,7 @@ alias vap='ansible-playbook -i .vagrant/provisioners/ansible/inventory --connect
 
 source /opt/rh/sclo-vagrant1/enable
 export X_SCLS="`scl enable sclo-vagrant1 'echo $X_SCLS'`"
+
+#Variables to use for testing branch for samba-integration
+export GIT_REPO_URL="https://github.com/spuiuk/samba-integration"
+export GIT_REPO_BRANCH="testing"
