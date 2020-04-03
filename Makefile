@@ -25,14 +25,23 @@ fix_ssh:
 	ssh vagrant@setup "sudo rsync -av --no-o ~vagrant/.ssh/* /root/.ssh"
 
 #rsync setup files and call ansible scripts on setup.
-setup.build:
+copy_files:
 	rsync -av tests/samba-integration/vagrant/ansible/* root@setup:/home/vagrant/ansible
-	ssh root@setup "sudo ansible-playbook -i /home/vagrant/ansible/vagrant_ansible_inventory /home/vagrant/ansible/site.yml"
+	ssh root@setup "chmod 0700 /home/vagrant/ansible/vagrant_insecure_private_ssh_key"
 
+setup.build: copy_files
+	ssh root@setup "ansible-playbook -i /home/vagrant/ansible/vagrant_ansible_inventory /home/vagrant/ansible/site.yml"
+
+cluster: copy_files
+	ssh root@setup "ansible-playbook -i /home/vagrant/ansible/vagrant_ansible_inventory /home/vagrant/ansible/setup-cluster.yml"
+
+clients: copy_files
+	ssh root@setup "ansible-playbook -i /home/vagrant/ansible/vagrant_ansible_inventory /home/vagrant/ansible/setup-clients.yml"
 
 #remove vagrant machines
 clean:
 	cd vagrant; vagrant destroy -f
+	rm -f ansible/vagrant_ansible_inventory ansible/ssh-config-setup ansible/vagrant_insecure_private_ssh_key ./ssh-config-host
 
 #redo test
 redo: clean test
