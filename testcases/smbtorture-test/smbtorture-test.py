@@ -40,6 +40,7 @@ def smbtorture(mount_params, test, output):
                                 format_subunit_exec,
                                 output
                             )
+    print(cmd)
     ret = os.system(cmd)
     return ret == 0
 
