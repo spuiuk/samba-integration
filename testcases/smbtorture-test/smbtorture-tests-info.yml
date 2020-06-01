@@ -1,3 +1,4 @@
 ---
+- smb2.rename.simple_nodelete.simple_nodelete
 - smb2.rw
 - smb2.read
