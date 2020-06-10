@@ -1,0 +1,439 @@
+From cd3458a08d672f41f4ead1faedde2d2b579e8652 Mon Sep 17 00:00:00 2001
+From: Sachin Prabhu <sprabhu@redhat.com>
+Date: Mon, 8 Jun 2020 12:54:41 +0100
+Subject: [PATCH] s4/torture: Add command line parameter --fullname
+
+By passing this argument, the full name including the test suite name
+will be output.
+
+For example, the name in the output for the test smb2.read.dir is "dir".
+By using the --fullname parameter, the name used will be
+"smb2.read.dir".
+
+The default continues to be to use the shortname.
+
+Signed-off-by: Sachin Prabhu <sprabhu@redhat.com>
+---
+ lib/torture/simple.c         | 35 +++++++++++++++++++----
+ lib/torture/subunit.c        | 21 ++++++++++++--
+ lib/torture/torture.c        | 68 +++++++++++++++++++++++++++++++++++---------
+ lib/torture/torture.h        | 25 ++++++++++------
+ source4/torture/smbtorture.c | 28 ++++++++++++------
+ 5 files changed, 139 insertions(+), 38 deletions(-)
+
+diff --git a/lib/torture/simple.c b/lib/torture/simple.c
+index d234776..39fbc06 100644
+--- a/lib/torture/simple.c
++++ b/lib/torture/simple.c
+@@ -23,39 +23,64 @@
+ 
+ static struct timeval last_suite_started;
+ 
++static char *simple_get_name(struct torture_context *ctx,
++			       const char *name)
++{
++	char * ret;
++
++	if (ctx->use_prefix) {
++		ret = talloc_asprintf(ctx, "%s.%s", ctx->active_prefix,
++							name);
++	} else {
++		ret = talloc_asprintf(ctx, "%s", name);
++	}
++	return ret;
++}
++
+ static void simple_suite_start(struct torture_context *ctx,
+ 			       struct torture_suite *suite)
+ {
++	char *name = simple_get_name(ctx, suite->name);
++
+ 	last_suite_started = timeval_current();
+-	printf("Running %s\n", suite->name);
++	printf("Running %s\n", name);
++
++	TALLOC_FREE(name);
+ }
+ 
+ static void simple_suite_finish(struct torture_context *ctx,
+ 			        struct torture_suite *suite)
+ {
++	char *name = simple_get_name(ctx, suite->name);
+ 
+-	printf("%s took %g secs\n\n", suite->name,
++	printf("%s took %g secs\n\n", name,
+ 		   timeval_elapsed(&last_suite_started));
++
++	TALLOC_FREE(name);
+ }
+ 
+ static void simple_test_result(struct torture_context *context,
+ 			       enum torture_result res, const char *reason)
+ {
++	char *name = simple_get_name(context, context->active_test->name);
++
+ 	switch (res) {
+ 	case TORTURE_OK:
+ 		if (reason)
+ 			printf("OK: %s\n", reason);
+ 		break;
+ 	case TORTURE_FAIL:
+-		printf("TEST %s FAILED! - %s\n", context->active_test->name, reason);
++		printf("TEST %s FAILED! - %s\n", name, reason);
+ 		break;
+ 	case TORTURE_ERROR:
+-		printf("ERROR IN TEST %s! - %s\n", context->active_test->name, reason);
++		printf("ERROR IN TEST %s! - %s\n", name, reason);
+ 		break;
+ 	case TORTURE_SKIP:
+-		printf("SKIP: %s - %s\n", context->active_test->name, reason);
++		printf("SKIP: %s - %s\n", name, reason);
+ 		break;
+ 	}
++
++	TALLOC_FREE(name);
+ }
+ 
+ static void simple_comment(struct torture_context *test,
+diff --git a/lib/torture/subunit.c b/lib/torture/subunit.c
+index deb96ff..4fbf33f 100644
+--- a/lib/torture/subunit.c
++++ b/lib/torture/subunit.c
+@@ -45,11 +45,26 @@ static char *torture_subunit_test_name(struct torture_context *ctx,
+ 				   struct torture_tcase *tcase,
+ 				   struct torture_test *test)
+ {
+-	if (!strcmp(tcase->name, test->name)) {
+-		return talloc_strdup(ctx, test->name);
++	char *ret;
++	char *prefix;
++
++	if (ctx->use_prefix) {
++		prefix = talloc_asprintf(ctx, "%s.", ctx->active_prefix);
++		if (!strcmp(tcase->name, test->name)) {
++			ret = talloc_asprintf(ctx, "%s%s", prefix, test->name);
++		} else {
++			ret = talloc_asprintf(ctx, "%s%s.%s", prefix, tcase->name, test->name);
++		}
++		TALLOC_FREE(prefix);
+ 	} else {
+-		return talloc_asprintf(ctx, "%s.%s", tcase->name, test->name);
++		if (!strcmp(tcase->name, test->name)) {
++			ret = talloc_asprintf(ctx, "%s", test->name);
++		} else {
++			ret = talloc_asprintf(ctx, "%s.%s", tcase->name, test->name);
++		}
+ 	}
++
++	return ret;
+ }
+ 
+ static void torture_subunit_report_time(struct torture_context *tctx)
+diff --git a/lib/torture/torture.c b/lib/torture/torture.c
+index 40807d9..01c214d 100644
+--- a/lib/torture/torture.c
++++ b/lib/torture/torture.c
+@@ -333,18 +333,29 @@ int torture_suite_children_count(const struct torture_suite *suite)
+ /**
+  * Run a torture test suite.
+  */
+-bool torture_run_suite(struct torture_context *context, 
++bool torture_run_suite(struct torture_context *context, const char *prefix,
+ 		       struct torture_suite *suite)
+ {
+-	return torture_run_suite_restricted(context, suite, NULL);
++	return torture_run_suite_restricted(context, prefix, suite, NULL);
+ }
+ 
+-bool torture_run_suite_restricted(struct torture_context *context, 
+-		       struct torture_suite *suite, const char **restricted)
++bool torture_run_suite_restricted(struct torture_context *context,
++				  const char *prefix,
++				  struct torture_suite *suite,
++				  const char **restricted)
+ {
+ 	bool ret = true;
+ 	struct torture_tcase *tcase;
+ 	struct torture_suite *tsuite;
++	char *tprefix = NULL;
++
++	if (context->use_prefix) {
++		if (prefix != NULL) {
++			tprefix = talloc_asprintf(context, "%s.%s", prefix, suite->name);
++		} else {
++			tprefix = talloc_asprintf(context, "%s", suite->name);
++		}
++	}
+ 
+ 	if (context->results->ui_ops->suite_start)
+ 		context->results->ui_ops->suite_start(context, suite);
+@@ -354,18 +365,21 @@ bool torture_run_suite_restricted(struct torture_context *context,
+ 		torture_suite_children_count(suite), TORTURE_PROGRESS_SET);
+ 
+ 	for (tcase = suite->testcases; tcase; tcase = tcase->next) {
+-		ret &= torture_run_tcase_restricted(context, tcase, restricted);
++		ret &= torture_run_tcase_restricted(context, tprefix,
++						    tcase, restricted);
+ 	}
+ 
+ 	for (tsuite = suite->children; tsuite; tsuite = tsuite->next) {
+ 		context->results->ui_ops->progress(context, 0, TORTURE_PROGRESS_PUSH);
+-		ret &= torture_run_suite_restricted(context, tsuite, restricted);
++		ret &= torture_run_suite_restricted(context, tprefix,
++							tsuite, restricted);
+ 		context->results->ui_ops->progress(context, 0, TORTURE_PROGRESS_POP);
+ 	}
+ 
+ 	if (context->results->ui_ops->suite_finish)
+ 		context->results->ui_ops->suite_finish(context, suite);
+ 
++	TALLOC_FREE(tprefix);
+ 	return ret;
+ }
+ 
+@@ -468,22 +482,32 @@ static bool internal_torture_run_test(struct torture_context *context,
+ 	return success;
+ }
+ 
+-bool torture_run_tcase(struct torture_context *context,
++bool torture_run_tcase(struct torture_context *context, const char *prefix,
+ 		       struct torture_tcase *tcase)
+ {
+-	return torture_run_tcase_restricted(context, tcase, NULL);
++	return torture_run_tcase_restricted(context, prefix, tcase, NULL);
+ }
+ 
+ bool torture_run_tcase_restricted(struct torture_context *context,
+-		       struct torture_tcase *tcase, const char **restricted)
++				  const char *prefix,
++				  struct torture_tcase *tcase,
++				  const char **restricted)
+ {
+ 	bool ret = true;
+ 	struct torture_test *test;
+ 	bool setup_succeeded = true;
+ 	const char * setup_reason = "Setup failed";
+ 
++	if (context->use_prefix) {
++		if (prefix != NULL)	{
++			context->active_prefix = prefix;
++		} else {
++			context->active_prefix = "";
++		}
++	}
++
+ 	context->active_tcase = tcase;
+-	if (context->results->ui_ops->tcase_start) 
++	if (context->results->ui_ops->tcase_start)
+ 		context->results->ui_ops->tcase_start(context, tcase);
+ 
+ 	if (tcase->fixture_persistent && tcase->setup) {
+@@ -519,6 +543,7 @@ bool torture_run_tcase_restricted(struct torture_context *context,
+ 		ret = false;
+ 	}
+ 
++	context->active_prefix = NULL;
+ 	context->active_tcase = NULL;
+ 	context->active_test = NULL;
+ 
+@@ -528,19 +553,34 @@ bool torture_run_tcase_restricted(struct torture_context *context,
+ 	return (!setup_succeeded) ? false : ret;
+ }
+ 
+-bool torture_run_test(struct torture_context *context, 
++bool torture_run_test(struct torture_context *context,
++					  const char *prefix,
+ 					  struct torture_tcase *tcase,
+ 					  struct torture_test *test)
+ {
+-	return internal_torture_run_test(context, tcase, test, false, NULL);
++	return torture_run_test_restricted(context, prefix, tcase, test, NULL);
+ }
+ 
+-bool torture_run_test_restricted(struct torture_context *context, 
++bool torture_run_test_restricted(struct torture_context *context,
++					  const char *prefix,
+ 					  struct torture_tcase *tcase,
+ 					  struct torture_test *test,
+ 					  const char **restricted)
+ {
+-	return internal_torture_run_test(context, tcase, test, false, restricted);
++	bool ret;
++
++	if (context->use_prefix) {
++		if (prefix != NULL)	{
++			context->active_prefix = prefix;
++		} else {
++			context->active_prefix = "";
++		}
++	}
++
++	ret = internal_torture_run_test(context, tcase, test, false, restricted);
++	context->active_prefix = NULL;
++
++	return ret;
+ }
+ 
+ int torture_setting_int(struct torture_context *test, const char *name, 
+diff --git a/lib/torture/torture.h b/lib/torture/torture.h
+index dbc711e..e76532f 100644
+--- a/lib/torture/torture.h
++++ b/lib/torture/torture.h
+@@ -3,8 +3,8 @@
+    SMB torture UI functions
+ 
+    Copyright (C) Jelmer Vernooij 2006
+-   
+    This program is free software; you can redistribute it and/or modify
++
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation; either version 3 of the License, or
+    (at your option) any later version.
+@@ -87,6 +87,9 @@ struct torture_context
+ {
+ 	struct torture_results *results;
+ 
++	bool use_prefix;
++
++	const char *active_prefix;
+ 	struct torture_test *active_test;
+ 	struct torture_tcase *active_tcase;
+ 
+@@ -219,27 +222,33 @@ bool torture_suite_add_suite(struct torture_suite *suite,
+ 		struct torture_suite *child);
+ 
+ /* Run the specified testsuite recursively */
+-bool torture_run_suite(struct torture_context *context,
++bool torture_run_suite(struct torture_context *context, const char *prefix,
+ 					   struct torture_suite *suite);
+ 
+-/* Run the specified testsuite recursively, but only the specified 
++/* Run the specified testsuite recursively, but only the specified
+  * tests */
+-bool torture_run_suite_restricted(struct torture_context *context, 
+-		       struct torture_suite *suite, const char **restricted);
++bool torture_run_suite_restricted(struct torture_context *context,
++				  const char *prefix,
++				  struct torture_suite *suite,
++				  const char **restricted);
+ 
+ /* Run the specified testcase */
+-bool torture_run_tcase(struct torture_context *context,
++bool torture_run_tcase(struct torture_context *context, const char *prefix,
+ 					   struct torture_tcase *tcase);
+ 
+-bool torture_run_tcase_restricted(struct torture_context *context, 
+-		       struct torture_tcase *tcase, const char **restricted);
++bool torture_run_tcase_restricted(struct torture_context *context,
++				  const char *prefix,
++				  struct torture_tcase *tcase,
++				  const char **restricted);
+ 
+ /* Run the specified test */
+ bool torture_run_test(struct torture_context *context,
++					  const char *prefix,
+ 					  struct torture_tcase *tcase,
+ 					  struct torture_test *test);
+ 
+ bool torture_run_test_restricted(struct torture_context *context,
++					  const char *prefix,
+ 					  struct torture_tcase *tcase,
+ 					  struct torture_test *test,
+ 					  const char **restricted);
+diff --git a/source4/torture/smbtorture.c b/source4/torture/smbtorture.c
+index 1dbbe6c..7300a53 100644
+--- a/source4/torture/smbtorture.c
++++ b/source4/torture/smbtorture.c
+@@ -70,7 +70,7 @@ static void print_test_list(const struct torture_suite *suite, const char *prefi
+ }
+ 
+ static bool run_matching(struct torture_context *torture,
+-						 const char *prefix, 
++						 const char *prefix,
+ 						 const char *expr,
+ 						 const char **restricted,
+ 						 struct torture_suite *suite,
+@@ -87,10 +87,12 @@ static bool run_matching(struct torture_context *torture,
+ 		if (gen_fnmatch(expr, name) == 0) {
+ 			*matched = true;
+ 			reload_charcnv(torture->lp_ctx);
+-			if (restricted != NULL)
+-				ret &= torture_run_suite_restricted(torture, o, restricted);
+-			else
+-				ret &= torture_run_suite(torture, o);
++			if (restricted != NULL) {
++				ret &= torture_run_suite_restricted(torture, prefix, o,
++								    restricted);
++			} else {
++				ret &= torture_run_suite(torture, prefix, o);
++			}
+ 		}
+ 		ret &= run_matching(torture, name, expr, restricted, o, matched);
+ 	}
+@@ -100,14 +102,16 @@ static bool run_matching(struct torture_context *torture,
+ 		if (gen_fnmatch(expr, name) == 0) {
+ 			*matched = true;
+ 			reload_charcnv(torture->lp_ctx);
+-			ret &= torture_run_tcase_restricted(torture, t, restricted);
++			ret &= torture_run_tcase_restricted(torture, prefix, t,
++							    restricted);
+ 		}
+ 		for (p = t->tests; p; p = p->next) {
+ 			name = talloc_asprintf(torture, "%s.%s.%s", prefix, t->name, p->name);
+ 			if (gen_fnmatch(expr, name) == 0) {
+ 				*matched = true;
+ 				reload_charcnv(torture->lp_ctx);
+-				ret &= torture_run_test_restricted(torture, t, p, restricted);
++				ret &= torture_run_test_restricted(torture, prefix, t, p,
++								   restricted);
+ 			}
+ 		}
+ 	}
+@@ -126,6 +130,7 @@ bool torture_run_named_tests(struct torture_context *torture, const char *name,
+ 	bool ret = true;
+ 	bool matched = false;
+ 	struct torture_suite *o;
++	const char *prefix = "";
+ 
+ 	torture_ui_report_time(torture);
+ 
+@@ -135,7 +140,7 @@ bool torture_run_named_tests(struct torture_context *torture, const char *name,
+ 			return false;
+ 		}
+ 		for (o = torture_root->children; o; o = o->next) {
+-			ret &= torture_run_suite(torture, o);
++			ret &= torture_run_suite(torture, prefix, o);
+ 		}
+ 		return ret;
+ 	}
+@@ -386,6 +391,7 @@ int main(int argc, const char *argv[])
+ 	const char **restricted = NULL;
+ 	int num_restricted = -1;
+ 	const char *load_list = NULL;
++	static int fullname = 0;
+ 	enum {OPT_LOADFILE=1000,OPT_UNCLIST,OPT_TIMELIMIT,OPT_DNS, OPT_LIST,
+ 	      OPT_DANGEROUS,OPT_SMB_PORTS,OPT_ASYNC,OPT_NUMPROGS,
+ 	      OPT_EXTRA_USER,};
+@@ -393,6 +399,8 @@ int main(int argc, const char *argv[])
+ 
+ 	struct poptOption long_options[] = {
+ 		POPT_AUTOHELP
++		{"fullname",       0, POPT_ARG_NONE, &fullname, 0,
++		 "use full name for the test", NULL },
+ 		{"format", 0, POPT_ARG_STRING, &ui_ops_name, 0, "Output format (one of: simple, subunit)", NULL },
+ 		{"smb-ports",	'p', POPT_ARG_STRING, NULL,     OPT_SMB_PORTS,	"SMB ports", 	NULL},
+ 		{"basedir",	  0, POPT_ARG_STRING, &basedir, 0, "base directory", "BASEDIR" },
+@@ -669,6 +677,10 @@ int main(int argc, const char *argv[])
+ 		return 1;
+ 	}
+ 
++	if (fullname == 1) {
++		torture->use_prefix = true;
++	}
++
+ 	torture->lp_ctx = cmdline_lp_ctx;
+ 
+ 	gensec_init();
+-- 
+1.8.3.1
+
